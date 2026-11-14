@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Insurance Claim Fraud Risk Scorer</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #ffffff; --text: #1b2430; --muted: #5d6b7c;
+    --border: #dde2e9; --accent: #1f4fd8; --ok: #1a7f4b; --bad: #c62828; --warn-bg: #fff4d6; --warn-text: #6b4e00;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #11151b; --card: #1a2029; --text: #e8edf3; --muted: #9aa8b8;
+      --border: #2c3644; --accent: #6d94ff; --ok: #4cc38a; --bad: #ff6b6b; --warn-bg: #3a2f10; --warn-text: #ffd978;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+         background: var(--bg); color: var(--text); line-height: 1.5; }
+  main { max-width: 760px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-size: 1.6rem; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 20px; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 20px; margin-bottom: 16px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; }
+  label { display: block; font-size: 0.85rem; color: var(--muted); margin-bottom: 4px; }
+  input, select { width: 100%; padding: 9px 10px; font-size: 1rem; border-radius: 8px;
+                  border: 1px solid var(--border); background: var(--bg); color: var(--text); }
+  button { margin-top: 18px; padding: 11px 20px; font-size: 1rem; border: 0; border-radius: 8px;
+           background: var(--accent); color: #fff; cursor: pointer; font-weight: 600; }
+  button:hover { opacity: 0.92; }
+  .banner { background: var(--warn-bg); color: var(--warn-text); border-radius: 8px; padding: 10px 14px; margin-bottom: 16px; font-size: 0.9rem; }
+  .bar { height: 14px; background: var(--border); border-radius: 7px; overflow: hidden; margin: 10px 0 6px; position: relative; }
+  .bar > div { height: 100%; width: 0; transition: width .4s; }
+  .big { font-size: 2.2rem; font-weight: 700; }
+  .verdict { font-weight: 600; }
+  .metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; text-align: center; }
+  .metrics div { background: var(--bg); border-radius: 8px; padding: 10px; }
+  .metrics b { display: block; font-size: 1.2rem; }
+  .metrics span { color: var(--muted); font-size: 0.8rem; }
+  .hidden { display: none; }
+  small { color: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Insurance Claim Fraud Risk Scorer</h1>
+  <p class="sub">Enter claim details to get a fraud risk score. Higher-risk claims should be prioritised for investigator review.</p>
+
+  <div id="demo" class="banner hidden"><b>Demo model:</b> trained on synthetic data so the site works out of the box. Run <code>training/export_for_vercel.py</code> on the real Kaggle dataset and redeploy.</div>
+  <div id="error" class="banner hidden"></div>
+
+  <div class="card">
+    <div class="grid" id="form"></div>
+    <button id="go" type="button">Score claim</button>
+  </div>
+
+  <div class="card hidden" id="result">
+    <div class="big" id="pct"></div>
+    <div class="bar"><div id="fill"></div></div>
+    <div class="verdict" id="verdict"></div>
+    <small id="thr"></small>
+  </div>
+
+  <div class="card hidden" id="metricsCard">
+    <h3 style="margin-top:0">Model performance (held-out test set)</h3>
+    <div class="metrics" id="metrics"></div>
+    <p><small>Logistic Regression with class weighting. The decision threshold favours recall, because missing a fraudulent claim costs more than reviewing an extra one. Fields not shown here use typical (median or most common) values.</small></p>
+  </div>
+</main>
+
+<script>
+const pretty = s => s.replace(/_/g, " ").replace(/^./, c => c.toUpperCase());
+let M = null;
+
+function score(v) {
+  let z = M.intercept, k = 0;
+  M.num_cols.forEach((c, i) => {
+    let x = Number(v[c]);
+    if (!isFinite(x)) x = M.defaults[c];
+    const s = M.num_scale[i] || 1;
+    z += M.coef[k++] * ((x - M.num_mean[i]) / s);
+  });
+  M.cat_cols.forEach((c, i) => {
+    const val = String(v[c]);
+    M.cat_categories[i].forEach(cat => { if (val === cat) z += M.coef[k]; k++; });
+  });
+  return 1 / (1 + Math.exp(-z));
+}
+
+function buildForm() {
+  const f = document.getElementById("form");
+  M.ui_numeric.forEach(c => {
+    const [lo, hi] = M.ui_ranges[c];
+    f.insertAdjacentHTML("beforeend",
+      `<div><label for="${c}">${pretty(c)}</label><input id="${c}" type="number" min="${lo}" max="${hi}" step="any" value="${Math.round(M.defaults[c])}"></div>`);
+  });
+  M.ui_categorical.forEach(c => {
+    const i = M.cat_cols.indexOf(c);
+    const opts = M.cat_categories[i].map(o => `<option ${o === M.defaults[c] ? "selected" : ""}>${o}</option>`).join("");
+    f.insertAdjacentHTML("beforeend", `<div><label for="${c}">${pretty(c)}</label><select id="${c}">${opts}</select></div>`);
+  });
+}
+
+function collect() {
+  const v = Object.assign({}, M.defaults);
+  [...M.ui_numeric, ...M.ui_categorical].forEach(c => { v[c] = document.getElementById(c).value; });
+  // engineered feature used by the model
+  if (M.num_cols.includes("claim_to_premium")) {
+    const prem = Number(v.policy_annual_premium) || 1;
+    v.claim_to_premium = Number(v.total_claim_amount) / prem;
+  }
+  return v;
+}
+
+function run() {
+  const p = score(collect());
+  const high = p >= M.threshold;
+  document.getElementById("result").classList.remove("hidden");
+  document.getElementById("pct").textContent = (p * 100).toFixed(1) + "% fraud probability";
+  const fill = document.getElementById("fill");
+  fill.style.width = Math.min(100, p * 100) + "%";
+  fill.style.background = high ? "var(--bad)" : "var(--ok)";
+  const v = document.getElementById("verdict");
+  v.textContent = high ? "High risk: send to an investigator for review." : "Lower risk: standard processing.";
+  v.style.color = high ? "var(--bad)" : "var(--ok)";
+  document.getElementById("thr").textContent = "Decision threshold: " + (M.threshold * 100).toFixed(1) + "%";
+}
+
+function showMetrics() {
+  const m = M.metrics;
+  const items = [["ROC-AUC", m.roc_auc], ["PR-AUC", m.pr_auc], ["Recall", m.recall],
+                 ["Precision", m.precision], ["Fraud rate", (m.fraud_rate * 100).toFixed(1) + "%"], ["Claims", m.n_claims]];
+  document.getElementById("metrics").innerHTML = items.map(([k, x]) => `<div><b>${x}</b><span>${k}</span></div>`).join("");
+  document.getElementById("metricsCard").classList.remove("hidden");
+}
+
+fetch("model.json").then(r => { if (!r.ok) throw new Error("model.json not found"); return r.json(); })
+  .then(m => {
+    M = m;
+    if (M.demo) document.getElementById("demo").classList.remove("hidden");
+    buildForm(); showMetrics();
+    document.getElementById("go").addEventListener("click", run);
+  })
+  .catch(e => {
+    const el = document.getElementById("error");
+    el.textContent = "Could not load the model (" + e.message + "). Run training/export_for_vercel.py first.";
+    el.classList.remove("hidden");
+  });
+</script>
+</body>
+</html>

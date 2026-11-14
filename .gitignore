@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+training/outputs/
+training/data/*.csv
+.vercel
+.DS_Store
